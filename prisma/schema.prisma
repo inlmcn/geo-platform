@@ -1,0 +1,526 @@
+// GEO Platform Database Schema
+// 基于 PRD-拆分总览-新一代GEO优化系统 设计
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================
+// 用户与权限
+// ============================================
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  password      String
+  role          UserRole  @default(EXECUTER)
+  avatar        String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // 关联
+  questions     Question[]
+  monitorTasks  MonitorTask[]
+  articles      Article[]
+
+  @@map("users")
+}
+
+enum UserRole {
+  ADMIN       // 管理员
+  MANAGER     // 管理者
+  EXECUTER    // 执行者
+}
+
+// ============================================
+// PRD-P1-01: 提问资产库
+// ============================================
+
+model QuestionGroup {
+  id          String     @id @default(cuid())
+  name        String
+  description String?
+  color       String     @default("#3B82F6")
+  sortOrder   Int        @default(0)
+  isActive    Boolean    @default(true)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  // 关联
+  questions   Question[]
+
+  @@map("question_groups")
+}
+
+model Question {
+  id              String          @id @default(cuid())
+  content         String          // 提问内容
+  keywords        String[]        // 关键词列表
+  category        String?         // 分类
+  priority        QuestionPriority @default(MEDIUM)
+  isActive        Boolean         @default(true)
+  source          QuestionSource  @default(MANUAL)
+  aiSuggestion    String?         // AI推荐理由
+  lastMonitorTime DateTime?       // 最后监控时间
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  // 关联
+  userId          String
+  user            User            @relation(fields: [userId], references: [id])
+  groupId         String?
+  group           QuestionGroup?  @relation(fields: [groupId], references: [id])
+  monitorTasks    MonitorTask[]
+  brandMentions   BrandMention[]
+
+  @@index([content])
+  @@index([isActive])
+  @@map("questions")
+}
+
+enum QuestionPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum QuestionSource {
+  MANUAL      // 手动创建
+  AI_SUGGEST  // AI推荐
+  IMPORT      // 导入
+}
+
+// ============================================
+// PRD-P1-01: 多平台监控
+// ============================================
+
+model MonitorPlatform {
+  id              String    @id @default(cuid())
+  name            String    // 平台名称
+  code            String    @unique // 平台代码: doubao, deepseek, yuanbao, kimi, qianwen, wenxin, zhipu, nami
+  baseUrl         String?   // 平台URL
+  apiEndpoint     String?   // API端点
+  isActive        Boolean   @default(true)
+  config          Json?     // 平台配置
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // 关联
+  monitorTasks    MonitorTask[]
+  brandMentions   BrandMention[]
+  sourceWeights   SourceWeight[]
+  competitorStats CompetitorStat[]
+  sourceStats     SourceStat[]
+
+  @@map("monitor_platforms")
+}
+
+model MonitorTask {
+  id              String              @id @default(cuid())
+  name            String
+  status          TaskStatus          @default(PENDING)
+  schedule        String?             // cron表达式
+  lastRunTime     DateTime?
+  nextRunTime     DateTime?
+  config          Json?               // 任务配置
+  result          Json?               // 执行结果
+  errorMessage    String?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  // 关联
+  userId          String
+  user            User                @relation(fields: [userId], references: [id])
+  questionId      String
+  question        Question            @relation(fields: [questionId], references: [id])
+  platformId      String
+  platform        MonitorPlatform      @relation(fields: [platformId], references: [id])
+  brandMentions   BrandMention[]
+
+  @@index([status])
+  @@index([nextRunTime])
+  @@map("monitor_tasks")
+}
+
+enum TaskStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+// ============================================
+// PRD-P1-01: 品牌提及追踪
+// ============================================
+
+model BrandMention {
+  id              String            @id @default(cuid())
+  question        String            // 原始提问
+  answer          String?           // AI回答内容
+  rank            Int?              // 品牌在回答中的排名
+  isMentioned     Boolean           @default(false) // 是否提及品牌
+  mentionCount    Int               @default(0) // 提及次数
+  sentiment       Sentiment         @default(NEUTRAL)
+  exposureScore   Float?            @default(0) // 曝光效果分数
+  responseTime    Int?              // 响应时间(毫秒)
+  rawResponse     Json?             // 原始响应数据
+  capturedAt      DateTime          @default(now())
+  createdAt       DateTime          @default(now())
+
+  // 关联
+  questionId      String
+  questionRel     Question          @relation(fields: [questionId], references: [id])
+  platformId      String
+  platform        MonitorPlatform    @relation(fields: [platformId], references: [id])
+  monitorTaskId   String?
+  monitorTask     MonitorTask?      @relation(fields: [monitorTaskId], references: [id])
+  sourceId        String?
+  source          Source?           @relation(fields: [sourceId], references: [id])
+  competitorId    String?
+  competitor      Competitor?       @relation(fields: [competitorId], references: [id])
+
+  @@index([capturedAt])
+  @@index([isMentioned])
+  @@index([platformId])
+  @@map("brand_mentions")
+}
+
+enum Sentiment {
+  POSITIVE
+  NEUTRAL
+  NEGATIVE
+}
+
+// ============================================
+// PRD-P1-01: 竞品对比监控
+// ============================================
+
+model Competitor {
+  id              String            @id @default(cuid())
+  name            String            // 竞品名称
+  description     String?
+  website         String?
+  category        String?           // 行业分类
+  isActive        Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  // 关联
+  brandMentions   BrandMention[]
+  competitorStats CompetitorStat[]
+
+  @@map("competitors")
+}
+
+model CompetitorStat {
+  id              String            @id @default(cuid())
+  date            DateTime
+  mentionRate     Float             @default(0) // 提及率
+  avgRank         Float?            // 平均排名
+  exposureScore   Float?            @default(0)
+  sentimentScore  Float?            @default(0)
+  sourceCount     Int               @default(0) // 引用源数量
+  createdAt       DateTime          @default(now())
+
+  // 关联
+  competitorId    String
+  competitor      Competitor        @relation(fields: [competitorId], references: [id])
+  platformId      String
+  platform        MonitorPlatform    @relation(fields: [platformId], references: [id])
+
+  @@unique([competitorId, platformId, date])
+  @@map("competitor_stats")
+}
+
+// ============================================
+// PRD-P1-01: 信源引用监控
+// ============================================
+
+model Source {
+  id              String            @id @default(cuid())
+  domain          String            @unique // 域名
+  name            String?           // 来源名称
+  type            SourceType        @default(OTHER)
+  authority       Float             @default(0) // 域名权威性
+  isActive        Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  // 关联
+  brandMentions   BrandMention[]
+  sourceWeights   SourceWeight[]
+  sourceStats     SourceStat[]
+
+  @@map("sources")
+}
+
+enum SourceType {
+  AUTHORITY_MEDIA   // 权威媒体
+  INDUSTRY_MEDIA    // 行业媒体
+  OFFICIAL          // 官网
+  BLOG              // 博客
+  ZHIHU             // 知乎
+  FORUM             // 论坛
+  OTHER             // 其他
+}
+
+model SourceStat {
+  id              String            @id @default(cuid())
+  date            DateTime
+  mentionCount    Int               @default(0)
+  avgRank         Float?
+  avgExposure     Float?            @default(0)
+  createdAt       DateTime          @default(now())
+
+  // 关联
+  sourceId        String
+  source          Source            @relation(fields: [sourceId], references: [id])
+  platformId      String
+  platform        MonitorPlatform    @relation(fields: [platformId], references: [id])
+
+  @@unique([sourceId, platformId, date])
+  @@map("source_stats")
+}
+
+// ============================================
+// PRD-P2-05: 信源权重图谱
+// ============================================
+
+model SourceWeight {
+  id              String            @id @default(cuid())
+  weight          Float             @default(0) // 权重 0-1
+  citationCount   Int               @default(0) // 引用次数
+  avgPosition     Float?            // 平均引用位置
+  timeliness      Float             @default(1) // 时效性分数
+  calculatedAt    DateTime          @default(now())
+  createdAt       DateTime          @default(now())
+
+  // 关联
+  sourceId        String
+  source          Source            @relation(fields: [sourceId], references: [id])
+  platformId      String
+  platform        MonitorPlatform    @relation(fields: [platformId], references: [id])
+
+  @@unique([sourceId, platformId, calculatedAt])
+  @@map("source_weights")
+}
+
+// ============================================
+// PRD-P3-07: 高引用DNA内容引擎
+// ============================================
+
+model Article {
+  id              String            @id @default(cuid())
+  title           String
+  content         String
+  type            ArticleType       @default(OTHER)
+  status          ArticleStatus     @default(DRAFT)
+  keywords        String[]          // 目标关键词
+  dnaScore        Float?            // DNA匹配分数
+  referenceRate   Float?            // 引用率
+  publishedAt     DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  // 关联
+  userId          String
+  user            User              @relation(fields: [userId], references: [id])
+  strategyId      String?
+  strategy        ContentStrategy?  @relation(fields: [strategyId], references: [id])
+  mediaPlacements MediaPlacement[]
+  abTests         ABTest[]
+
+  @@index([status])
+  @@index([type])
+  @@map("articles")
+}
+
+enum ArticleType {
+  AUTHORITY_LIST     // 权威榜单
+  RECOMMENDATION     // 优质推荐
+  BUYING_GUIDE       // 选购指南
+  SOLUTION           // 解决方案
+  FAQ                // FAQ问答
+  REVIEW             // 深度测评
+  CASE_STUDY         // 案例解析
+  INDUSTRY_TREND     // 行业趋势
+  BRAND_RECOMMEND    // 品牌推荐
+  TECH_EDUCATION     // 技术科普
+  DEFINITION         // 定义型
+  OTHER              // 其他
+}
+
+enum ArticleStatus {
+  DRAFT
+  REVIEWING
+  APPROVED
+  PUBLISHED
+  ARCHIVED
+}
+
+// ============================================
+// PRD-P2-03/P2-04: 内容策略
+// ============================================
+
+model ContentStrategy {
+  id              String            @id @default(cuid())
+  name            String
+  description     String?
+  type            StrategyType      @default(MANUAL)
+  config          Json?             // 策略配置
+  isActive        Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  // 关联
+  articles        Article[]
+  mediaPlacements MediaPlacement[]
+
+  @@map("content_strategies")
+}
+
+enum StrategyType {
+  MANUAL          // 手控模式
+  AI_AUTO         // 智架模式
+}
+
+// ============================================
+// PRD-P2-03: 媒体投放管理
+// ============================================
+
+model MediaPlatform {
+  id              String            @id @default(cuid())
+  name            String
+  type            MediaType         @default(OTHER)
+  baseUrl         String?
+  apiEndpoint     String?
+  config          Json?
+  isActive        Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  // 关联
+  mediaPlacements MediaPlacement[]
+
+  @@map("media_platforms")
+}
+
+enum MediaType {
+  WEBSITE          // 网站
+  BLOG             // 博客
+  FORUM            // 论坛
+  SOCIAL           // 社交媒体
+  NEWS             // 新闻媒体
+  ZHIHU            // 知乎
+  OTHER            // 其他
+}
+
+model MediaPlacement {
+  id              String            @id @default(cuid())
+  status          PlacementStatus   @default(PENDING)
+  scheduledAt     DateTime?
+  publishedAt     DateTime?
+  url             String?           // 发布URL
+  config          Json?             // 投放配置
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  // 关联
+  articleId       String
+  article         Article           @relation(fields: [articleId], references: [id])
+  mediaPlatformId String
+  mediaPlatform   MediaPlatform     @relation(fields: [mediaPlatformId], references: [id])
+  strategyId      String?
+  strategy        ContentStrategy?  @relation(fields: [strategyId], references: [id])
+
+  @@map("media_placements")
+}
+
+enum PlacementStatus {
+  PENDING
+  SCHEDULED
+  PUBLISHED
+  FAILED
+  CANCELLED
+}
+
+// ============================================
+// PRD-P4-08: A/B测试
+// ============================================
+
+model ABTest {
+  id              String            @id @default(cuid())
+  name            String
+  description     String?
+  status          ABTestStatus      @default(DRAFT)
+  startDate       DateTime?
+  endDate         DateTime?
+  config          Json?             // 测试配置
+  result          Json?             // 测试结果
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  // 关联
+  articleId       String
+  article         Article           @relation(fields: [articleId], references: [id])
+
+  @@map("ab_tests")
+}
+
+enum ABTestStatus {
+  DRAFT
+  RUNNING
+  COMPLETED
+  CANCELLED
+}
+
+// ============================================
+// PRD-P4-08: 效果验证
+// ============================================
+
+model EffectTracking {
+  id              String            @id @default(cuid())
+  date            DateTime
+  mentionRate     Float             @default(0)
+  avgRank         Float?
+  exposureScore   Float             @default(0)
+  referenceCount  Int               @default(0)
+  sentimentScore  Float             @default(0)
+  createdAt       DateTime          @default(now())
+
+  @@unique([date])
+  @@map("effect_tracking")
+}
+
+// ============================================
+// PRD-P1-02: 分析结果
+// ============================================
+
+model AnalysisResult {
+  id              String            @id @default(cuid())
+  type            AnalysisType
+  title           String
+  content         String
+  data            Json?             // 分析数据
+  insights        String[]          // 洞察列表
+  suggestions     String[]          // 建议列表
+  createdAt       DateTime          @default(now())
+
+  @@map("analysis_results")
+}
+
+enum AnalysisType {
+  ANSWER_TRACE        // 回答溯源
+  SOURCE_ANALYSIS     // 引用源分析
+  COMPETITOR_SCENE    // 竞品场景分析
+  BRAND_BLIND_SPOT    // 品牌盲区识别
+  SEMANTIC_GAP        // 语义差距分析
+}
