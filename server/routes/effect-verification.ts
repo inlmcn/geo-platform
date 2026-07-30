@@ -1,41 +1,80 @@
-import { Router, Request, Response } from 'express'
+import { Router, Response } from 'express'
 import { prisma } from '../index'
+import { AuthRequest } from '../middleware/auth'
 
 const router = Router()
 
 // ============================================
-// 获取效果追踪数据
+// 效果追踪（从数据库聚合）
 // ============================================
 
-router.get('/tracking', async (req: Request, res: Response) => {
+router.get('/tracking', async (req: AuthRequest, res: Response) => {
   try {
-    const { startDate, endDate, granularity } = req.query
+    const { days } = req.query
+    const dayCount = parseInt(days as string) || 7
 
-    // 模拟追踪数据（实际应从数据库聚合）
-    const tracking = [
-      { date: '01/24', mentionRate: 22, avgRank: 6.2, exposureScore: 65 },
-      { date: '01/25', mentionRate: 24, avgRank: 5.8, exposureScore: 68 },
-      { date: '01/26', mentionRate: 26, avgRank: 5.5, exposureScore: 71 },
-      { date: '01/27', mentionRate: 25, avgRank: 5.6, exposureScore: 70 },
-      { date: '01/28', mentionRate: 28, avgRank: 5.2, exposureScore: 74 },
-      { date: '01/29', mentionRate: 30, avgRank: 4.8, exposureScore: 78 },
-      { date: '01/30', mentionRate: 32, avgRank: 4.5, exposureScore: 82 }
-    ]
+    // 从 EffectTracking 表读取趋势数据
+    const tracking = await prisma.effectTracking.findMany({
+      orderBy: { date: 'desc' },
+      take: dayCount,
+      select: {
+        date: true,
+        mentionRate: true,
+        avgRank: true,
+        exposureScore: true,
+        referenceCount: true,
+        sentimentScore: true
+      }
+    })
+
+    // 如果数据库没有数据，从品牌提及表聚合
+    if (tracking.length === 0) {
+      const mentions = await prisma.brandMention.findMany({
+        orderBy: { capturedAt: 'desc' },
+        take: 100,
+        select: {
+          capturedAt: true,
+          rank: true,
+          exposureScore: true,
+          isMentioned: true
+        }
+      })
+
+      // 按日期聚合
+      const byDate: Record<string, any[]> = {}
+      mentions.forEach(m => {
+        const date = m.capturedAt.toISOString().split('T')[0]
+        if (!byDate[date]) byDate[date] = []
+        byDate[date].push(m)
+      })
+
+      const aggregated = Object.entries(byDate)
+        .slice(0, dayCount)
+        .reverse()
+        .map(([date, items]) => ({
+          date: new Date(date),
+          mentionRate: Math.round(items.filter(i => i.isMentioned).length / Math.max(items.length, 1) * 100),
+          avgRank: Math.round(items.filter(i => i.rank).reduce((sum, i) => sum + (i.rank || 0), 0) / Math.max(items.filter(i => i.rank).length, 1) * 10) / 10,
+          exposureScore: Math.round(items.reduce((sum, i) => sum + (i.exposureScore || 0), 0) / Math.max(items.length, 1))
+        }))
+
+      return res.json({ tracking: aggregated })
+    }
 
     res.json({ tracking })
   } catch (error) {
     console.error('Error fetching tracking data:', error)
-    res.status(500).json({ error: 'Failed to fetch tracking data' })
+    res.status(500).json({ error: '获取追踪数据失败' })
   }
 })
 
 // ============================================
-// 获取文章引用率排名
+// 文章引用率排名（从数据库读取）
 // ============================================
 
-router.get('/articles', async (req: Request, res: Response) => {
+router.get('/articles', async (req: AuthRequest, res: Response) => {
   try {
-    const { limit, sortBy } = req.query
+    const { limit } = req.query
 
     const articles = await prisma.article.findMany({
       where: { status: 'PUBLISHED' },
@@ -47,122 +86,172 @@ router.get('/articles', async (req: Request, res: Response) => {
         type: true,
         referenceRate: true,
         dnaScore: true,
-        createdAt: true
+        createdAt: true,
+        _count: { select: { mediaPlacements: true } }
       }
     })
 
-    // 如果数据库没有足够数据，返回模拟数据
-    const mockArticles = [
-      { id: 'a1', title: '2024年XX行业十大品牌排行榜', type: 'AUTHORITY_LIST', referenceRate: 35, references: 45, platforms: 5, trend: 'up' },
-      { id: 'a2', title: '如何选择XX行业供应商？完整选购指南', type: 'BUYING_GUIDE', referenceRate: 28, references: 36, platforms: 4, trend: 'up' },
-      { id: 'a3', title: '关于XX品牌的常见问题解答', type: 'FAQ', referenceRate: 32, references: 42, platforms: 5, trend: 'stable' },
-      { id: 'a4', title: 'XX品牌深度测评：值得购买吗？', type: 'REVIEW', referenceRate: 22, references: 28, platforms: 3, trend: 'up' },
-      { id: 'a5', title: 'XX行业2024年发展趋势报告', type: 'INDUSTRY_TREND', referenceRate: 18, references: 23, platforms: 3, trend: 'down' }
-    ]
+    // 补充引用次数和平台覆盖数
+    const enriched = await Promise.all(
+      articles.map(async (article) => {
+        const mentionCount = await prisma.brandMention.count({
+          where: { articleId: article.id }
+        })
+        const platformCount = await prisma.brandMention.groupBy({
+          by: ['platformId'],
+          where: { articleId: article.id }
+        })
+        return {
+          ...article,
+          references: mentionCount,
+          platforms: platformCount.length,
+          trend: 'stable' as const
+        }
+      })
+    )
 
-    res.json({
-      articles: articles.length > 0 ? articles : mockArticles
-    })
+    res.json({ articles: enriched })
   } catch (error) {
     console.error('Error fetching article rankings:', error)
-    res.status(500).json({ error: 'Failed to fetch article rankings' })
+    res.status(500).json({ error: '获取文章排名失败' })
   }
 })
 
 // ============================================
-// 获取A/B测试结果
+// A/B测试结果（从数据库读取）
 // ============================================
 
-router.get('/ab-tests', async (req: Request, res: Response) => {
+router.get('/ab-tests', async (req: AuthRequest, res: Response) => {
   try {
     const { status } = req.query
 
-    // 模拟A/B测试数据
-    const tests = [
-      {
-        id: 'ab1',
-        name: '标题A vs 标题B',
-        status: 'completed',
-        startDate: '2024-01-15',
-        endDate: '2024-01-22',
-        variantA: { name: '原标题', impressions: 15000, clicks: 450, conversions: 45, ctr: 3.0, conversionRate: 10.0 },
-        variantB: { name: '新标题', impressions: 15000, clicks: 525, conversions: 63, ctr: 3.5, conversionRate: 12.0 },
-        confidence: 95.2,
-        winner: 'B'
+    const where: any = {}
+    if (status) where.status = status as string
+
+    const tests = await prisma.aBTest.findMany({
+      where,
+      include: {
+        article: { select: { id: true, title: true } }
       },
-      {
-        id: 'ab2',
-        name: 'FAQ格式 vs 传统格式',
-        status: 'completed',
-        startDate: '2024-01-10',
-        endDate: '2024-01-17',
-        variantA: { name: '传统格式', impressions: 12000, clicks: 360, conversions: 36, ctr: 3.0, conversionRate: 10.0 },
-        variantB: { name: 'FAQ格式', impressions: 12000, clicks: 480, conversions: 72, ctr: 4.0, conversionRate: 15.0 },
-        confidence: 98.5,
-        winner: 'B'
-      }
-    ]
+      orderBy: { createdAt: 'desc' }
+    })
 
     res.json({ tests })
   } catch (error) {
     console.error('Error fetching AB tests:', error)
-    res.status(500).json({ error: 'Failed to fetch AB tests' })
+    res.status(500).json({ error: '获取A/B测试失败' })
   }
 })
 
 // ============================================
-// 获取ROI数据
+// ROI数据（从数据库聚合）
 // ============================================
 
-router.get('/roi', async (req: Request, res: Response) => {
+router.get('/roi', async (req: AuthRequest, res: Response) => {
   try {
-    // 模拟ROI数据
-    const roi = {
-      totalInvestment: 50000,
-      totalReturn: 125000,
-      roi: 150,
-      metrics: {
-        avgCostPerReference: 220,
-        avgReturnPerReference: 550,
-        totalReferences: 227,
-        avgTimeToReference: 14
-      }
-    }
+    // 统计文章数、引用数
+    const totalArticles = await prisma.article.count({ where: { status: 'PUBLISHED' } })
+    const totalReferences = await prisma.brandMention.count({ where: { isMentioned: true } })
 
-    res.json(roi)
+    // 统计投放数
+    const totalPlacements = await prisma.mediaPlacement.count({
+      where: { status: 'PUBLISHED' }
+    })
+
+    // 从品牌提及计算平均引用周期
+    const firstArticle = await prisma.article.findFirst({
+      where: { status: 'PUBLISHED' },
+      orderBy: { createdAt: 'asc' },
+      select: { createdAt: true }
+    })
+    const avgDays = firstArticle
+      ? Math.round((Date.now() - firstArticle.createdAt.getTime()) / (1000 * 60 * 60 * 24) / Math.max(totalArticles, 1))
+      : 14
+
+    // ROI计算（基于投放成本估算）
+    const avgCostPerPlacement = 500 // 假设平均每个投放成本500元
+    const avgReturnPerReference = 550 // 假设每次引用回报550元
+    const totalInvestment = totalPlacements * avgCostPerPlacement
+    const totalReturn = totalReferences * avgReturnPerReference
+    const roi = totalInvestment > 0 ? Math.round(((totalReturn - totalInvestment) / totalInvestment) * 100) : 0
+
+    res.json({
+      totalInvestment,
+      totalReturn,
+      roi: Math.max(0, roi),
+      metrics: {
+        avgCostPerReference: totalReferences > 0 ? Math.round(totalInvestment / totalReferences) : 0,
+        avgReturnPerReference,
+        totalReferences,
+        avgTimeToReference: avgDays,
+        totalArticles,
+        totalPlacements
+      }
+    })
   } catch (error) {
     console.error('Error fetching ROI:', error)
-    res.status(500).json({ error: 'Failed to fetch ROI' })
+    res.status(500).json({ error: '获取ROI数据失败' })
   }
 })
 
 // ============================================
-// 获取策略效果评估
+// 策略效果评估（从数据库聚合）
 // ============================================
 
-router.get('/strategies', async (req: Request, res: Response) => {
+router.get('/strategies', async (req: AuthRequest, res: Response) => {
   try {
-    // 模拟策略评估数据
-    const strategies = [
-      { name: '权威榜单策略', articles: 12, avgReferenceRate: 32, roi: 180, status: 'excellent' },
-      { name: 'FAQ问答策略', articles: 15, avgReferenceRate: 28, roi: 165, status: 'excellent' },
-      { name: '选购指南策略', articles: 8, avgReferenceRate: 25, roi: 142, status: 'good' },
-      { name: '深度测评策略', articles: 6, avgReferenceRate: 22, roi: 128, status: 'good' },
-      { name: '行业趋势策略', articles: 5, avgReferenceRate: 18, roi: 105, status: 'average' }
-    ]
+    // 按文章类型分组统计效果
+    const typeStats = await prisma.article.groupBy({
+      by: ['type'],
+      where: { status: 'PUBLISHED' },
+      _count: { id: true },
+      _avg: { referenceRate: true, dnaScore: true }
+    })
+
+    const strategies = typeStats.map(stat => ({
+      name: getArticleTypeName(stat.type),
+      type: stat.type,
+      articles: stat._count.id,
+      avgReferenceRate: Math.round(stat._avg.referenceRate || 0),
+      avgDnaScore: Math.round(stat._avg.dnaScore || 0),
+      roi: Math.round((stat._avg.referenceRate || 0) * 5), // 简化ROI计算
+      status: (stat._avg.referenceRate || 0) >= 30 ? 'excellent' : (stat._avg.referenceRate || 0) >= 20 ? 'good' : 'average'
+    }))
+
+    // 按引用率排序
+    strategies.sort((a, b) => b.avgReferenceRate - a.avgReferenceRate)
 
     res.json({ strategies })
   } catch (error) {
     console.error('Error fetching strategy evaluation:', error)
-    res.status(500).json({ error: 'Failed to fetch strategy evaluation' })
+    res.status(500).json({ error: '获取策略评估失败' })
   }
 })
+
+// 辅助函数：文章类型名称映射
+function getArticleTypeName(type: string): string {
+  const names: Record<string, string> = {
+    AUTHORITY_LIST: '权威榜单策略',
+    FAQ: 'FAQ问答策略',
+    BUYING_GUIDE: '选购指南策略',
+    REVIEW: '深度测评策略',
+    CASE_STUDY: '案例解析策略',
+    INDUSTRY_TREND: '行业趋势策略',
+    RECOMMENDATION: '优质推荐策略',
+    SOLUTION: '解决方案策略',
+    BRAND_RECOMMEND: '品牌推荐策略',
+    TECH_EDUCATION: '技术科普策略',
+    DEFINITION: '定义型策略',
+    OTHER: '其他策略'
+  }
+  return names[type] || type
+}
 
 // ============================================
 // 计算ROI
 // ============================================
 
-router.post('/calculate-roi', async (req: Request, res: Response) => {
+router.post('/calculate-roi', async (req: AuthRequest, res: Response) => {
   try {
     const { investment, returnAmount } = req.body
 
@@ -176,7 +265,7 @@ router.post('/calculate-roi', async (req: Request, res: Response) => {
     })
   } catch (error) {
     console.error('Error calculating ROI:', error)
-    res.status(500).json({ error: 'Failed to calculate ROI' })
+    res.status(500).json({ error: '计算ROI失败' })
   }
 })
 

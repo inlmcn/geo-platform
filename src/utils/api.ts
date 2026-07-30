@@ -1,5 +1,7 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001/api'
 
+const TOKEN_KEY = 'geo_token'
+
 interface RequestOptions {
   method?: string
   headers?: Record<string, string>
@@ -13,13 +15,27 @@ class ApiClient {
     this.baseUrl = baseUrl
   }
 
+  getToken(): string | null {
+    return localStorage.getItem(TOKEN_KEY)
+  }
+
+  setToken(token: string) {
+    localStorage.setItem(TOKEN_KEY, token)
+  }
+
+  removeToken() {
+    localStorage.removeItem(TOKEN_KEY)
+  }
+
   async request<T = any>(endpoint: string, options: RequestOptions = {}): Promise<T> {
     const { method = 'GET', headers = {}, body } = options
 
+    const token = this.getToken()
     const config: RequestInit = {
       method,
       headers: {
         'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...headers
       }
     }
@@ -30,8 +46,16 @@ class ApiClient {
 
     const response = await fetch(`${this.baseUrl}${endpoint}`, config)
 
+    // 401 自动跳转登录
+    if (response.status === 401) {
+      this.removeToken()
+      window.location.href = '/login'
+      throw new Error('认证已过期，请重新登录')
+    }
+
     if (!response.ok) {
-      throw new Error(`API Error: ${response.status} ${response.statusText}`)
+      const err = await response.json().catch(() => ({}))
+      throw new Error(err.error || `API Error: ${response.status} ${response.statusText}`)
     }
 
     return response.json()
@@ -596,4 +620,29 @@ export const sopApi = {
 
   // 获取知识库
   getKnowledge: () => apiClient.get('/sop/knowledge/list')
+}
+
+// ============================================
+// 认证 API
+// ============================================
+
+export const authApi = {
+  // 注册
+  register: (data: { email: string; password: string; name: string }) =>
+    apiClient.post('/auth/register', data),
+
+  // 登录
+  login: (data: { email: string; password: string }) =>
+    apiClient.post('/auth/login', data),
+
+  // 获取当前用户
+  getMe: () => apiClient.get('/auth/me'),
+
+  // 更新个人信息
+  updateMe: (data: { name?: string; avatar?: string }) =>
+    apiClient.put('/auth/me', data),
+
+  // 修改密码
+  changePassword: (data: { oldPassword: string; newPassword: string }) =>
+    apiClient.put('/auth/password', data)
 }

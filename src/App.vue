@@ -154,6 +154,9 @@ const breadcrumbs = computed(() => {
   return [{ path: '/', name: '首页' }, { path: route.path, name }]
 })
 
+// 是否隐藏侧边栏（登录页和首页）
+const hideLayout = computed(() => ['/', '/login'].includes(route.path))
+
 // 通知数据
 const showNotification = ref(false)
 const unreadCount = ref(5)
@@ -212,6 +215,27 @@ const navigateTo = (path: string) => {
 // 用户信息
 const userInfo = ref({ name: '管理员', email: 'admin@geo.com', role: '系统管理员', lastLogin: '2024-01-30 09:00' })
 
+// 从 localStorage 加载用户信息
+const loadUserInfo = () => {
+  const saved = localStorage.getItem('geo_user')
+  if (saved) {
+    try {
+      const user = JSON.parse(saved)
+      userInfo.value = { ...userInfo.value, ...user }
+    } catch {}
+  }
+}
+
+const logout = () => {
+  apiClient.removeToken()
+  localStorage.removeItem('geo_user')
+  router.push('/login')
+}
+
+onMounted(() => {
+  loadUserInfo()
+})
+
 const handleMenuClick = (e: { key: string }) => {
   if (e.key.startsWith('/')) router.push(e.key)
 }
@@ -242,7 +266,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="app-layout">
+  <div :class="hideLayout ? 'app-layout-full' : 'app-layout'">
     <!-- 移动端遮罩 -->
     <div
       v-if="isMobile && mobileMenuOpen"
@@ -250,7 +274,8 @@ onUnmounted(() => {
       @click="closeMobileMenu"
     />
 
-    <!-- 侧边栏 -->
+    <!-- 侧边栏（登录页和首页隐藏） -->
+    <template v-if="!hideLayout">
     <aside
       ref="siderRef"
       class="app-sider"
@@ -336,9 +361,10 @@ onUnmounted(() => {
         </Teleport>
       </div>
     </aside>
+    </template>
 
     <!-- 右侧主区域 -->
-    <div class="app-main" :class="{ 'main-collapsed': collapsed && !mobileMenuOpen }">
+    <div v-if="!hideLayout" class="app-main" :class="{ 'main-collapsed': collapsed && !mobileMenuOpen }">
       <!-- 顶部导航 -->
       <header class="app-header">
         <div class="flex items-center justify-between h-full px-4 md:px-6">
@@ -508,7 +534,7 @@ onUnmounted(() => {
                   </div>
                   <!-- 退出 -->
                   <div class="py-2 border-t border-gray-100">
-                    <button class="dropdown-item text-red-600 hover:bg-red-50">
+                    <button class="dropdown-item text-red-600 hover:bg-red-50" @click="logout">
                       <LogoutOutlined />
                       <span>退出登录</span>
                     </button>
@@ -598,6 +624,15 @@ onUnmounted(() => {
         <span class="text-gray-400 text-sm hidden sm:inline">玄琨GEO 新一代GEO优化系统</span>
       </footer>
     </div>
+
+    <!-- 登录页和首页：直接渲染内容 -->
+    <template v-else>
+      <RouterView v-slot="{ Component }">
+        <transition name="page-fade" mode="out-in">
+          <component :is="Component" />
+        </transition>
+      </RouterView>
+    </template>
   </div>
 </template>
 
@@ -606,6 +641,10 @@ onUnmounted(() => {
   display: flex;
   min-height: 100vh;
   background: #f0f2f5;
+}
+
+.app-layout-full {
+  min-height: 100vh;
 }
 
 /* 移动端遮罩 */

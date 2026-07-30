@@ -1,9 +1,16 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '@/views/HomeView.vue'
+import { apiClient } from '@/utils/api'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
+    {
+      path: '/login',
+      name: 'login',
+      component: () => import('@/views/LoginView.vue'),
+      meta: { public: true }
+    },
     {
       path: '/',
       name: 'home',
@@ -138,6 +145,18 @@ const router = createRouter({
       component: () => import('@/views/RankTrackingView.vue')
     }
   ]
+})
+
+// 路由守卫：未登录跳转登录页
+router.beforeEach((to, _from, next) => {
+  const token = apiClient.getToken()
+  if (to.meta.public) {
+    next()
+  } else if (!token) {
+    next('/login')
+  } else {
+    next()
+  }
 })
 
 export default router

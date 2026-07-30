@@ -1,5 +1,6 @@
-import { Router, Request, Response } from 'express'
+import { Router, Response } from 'express'
 import { prisma } from '../index'
+import { AuthRequest } from '../middleware/auth'
 
 const router = Router()
 
@@ -54,9 +55,9 @@ router.get('/tasks', async (req: Request, res: Response) => {
 })
 
 // 创建监控任务
-router.post('/tasks', async (req: Request, res: Response) => {
+router.post('/tasks', async (req: AuthRequest, res: Response) => {
   try {
-    const { name, questionId, platformId, schedule, userId } = req.body
+    const { name, questionId, platformId, schedule } = req.body
 
     const task = await prisma.monitorTask.create({
       data: {
@@ -64,7 +65,7 @@ router.post('/tasks', async (req: Request, res: Response) => {
         questionId,
         platformId,
         schedule,
-        userId: userId || 'default-user'
+        userId: req.userId!
       },
       include: {
         question: true,

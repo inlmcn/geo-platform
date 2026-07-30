@@ -1,5 +1,6 @@
-import { Router, Request, Response } from 'express'
+import { Router, Response } from 'express'
 import { prisma } from '../index'
+import { AuthRequest } from '../middleware/auth'
 
 const router = Router()
 
@@ -63,9 +64,9 @@ router.get('/:id', async (req: Request, res: Response) => {
 })
 
 // 创建文章
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', async (req: AuthRequest, res: Response) => {
   try {
-    const { title, content, type, keywords, strategyId, userId } = req.body
+    const { title, content, type, keywords, strategyId } = req.body
 
     const article = await prisma.article.create({
       data: {
@@ -74,7 +75,7 @@ router.post('/', async (req: Request, res: Response) => {
         type: type || 'OTHER',
         keywords: keywords || [],
         strategyId,
-        userId: userId || 'default-user'
+        userId: req.userId!
       },
       include: { strategy: true }
     })

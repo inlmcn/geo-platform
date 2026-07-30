@@ -1,5 +1,6 @@
-import { Router, Request, Response } from 'express'
+import { Router, Response } from 'express'
 import { prisma } from '../index'
+import { AuthRequest } from '../middleware/auth'
 
 const router = Router()
 
@@ -70,9 +71,9 @@ router.get('/:id', async (req: Request, res: Response) => {
 })
 
 // 创建提问
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', async (req: AuthRequest, res: Response) => {
   try {
-    const { content, keywords, category, priority, groupId, userId } = req.body
+    const { content, keywords, category, priority, groupId } = req.body
 
     const question = await prisma.question.create({
       data: {
@@ -81,7 +82,7 @@ router.post('/', async (req: Request, res: Response) => {
         category,
         priority: priority || 'MEDIUM',
         groupId,
-        userId: userId || 'default-user' // 简化处理
+        userId: req.userId!
       },
       include: { group: true }
     })
